@@ -7,11 +7,13 @@ const {
     ButtonStyle,
     ButtonBuilder,
     EmbedBuilder,
+    MessageFlags,
 } = require('discord.js');
 const mongoose = require('mongoose');
 const axios = require('axios');
 const Rating = require('./models/Rating');
 const SearchSession = require('./models/SearchSession');
+const getRatingString = require('./utils/getRatingString');
 
 const client = new Client({
     intents: [
@@ -30,6 +32,8 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
 
     if (interaction.commandName === 'search') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
         const query = interaction.options.get('query').value;
 
         try {
@@ -47,7 +51,9 @@ client.on('interactionCreate', async interaction => {
                 .slice(0, 5);
 
             if (results.length === 0) {
-                return interaction.reply('Nothing found 😞');
+                return interaction.editReply({
+                    content: 'Nothing found 😞',
+                });
             }
 
             const options = results.map((item, index) => ({
@@ -73,24 +79,31 @@ client.on('interactionCreate', async interaction => {
 
             await SearchSession.updateOne(
                 { userId: interaction.user.id },
-                { $set: { results: results } },
+                {
+                    $set: {
+                        results: results,
+                    },
+                },
                 {
                     upsert: true,
-                    setDefaultsOnInsert: true,
                 }
             );
 
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [embed],
                 components: [selectMenu],
             });
         } catch (error) {
             console.log(error);
-            interaction.reply('Search failed 😞');
+            interaction.editReply({
+                content: 'Search failed 😞',
+            });
         }
     }
 
     if (interaction.commandName === 'list') {
+        await interaction.deferReply();
+
         const targetUser =
             interaction.options.getUser('user') || interaction.user;
 
@@ -99,7 +112,7 @@ client.on('interactionCreate', async interaction => {
             const ratings = await Rating.find({ userId: targetUser.id });
 
             if (ratings.length === 0) {
-                return interaction.reply(
+                return interaction.editReply(
                     targetUser.id === interaction.user.id
                         ? 'Your list is empty 🎬'
                         : `${targetUser.username} hasn't rated anything yet`
@@ -110,9 +123,7 @@ client.on('interactionCreate', async interaction => {
                 name: `${rating.title} (${
                     rating.type === 'movie' ? 'Movie' : 'Series'
                 })`,
-                value: `Rating: ${'⭐'.repeat(rating.rating)} (${
-                    rating.rating
-                }/5)`,
+                value: getRatingString(rating.rating),
                 inline: true,
             }));
 
@@ -123,10 +134,10 @@ client.on('interactionCreate', async interaction => {
                 .setColor('#00b4d8')
                 .addFields(fields);
 
-            await interaction.reply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed] });
         } catch (error) {
             console.log(error);
-            await interaction.reply('Error fetching list 😞');
+            await interaction.editReply('Error fetching list 😞');
         }
     }
 });
@@ -140,6 +151,12 @@ client.on('interactionCreate', async interaction => {
         const session = await SearchSession.findOne({
             userId: interaction.user.id,
         });
+
+        const rating = await Rating.findOne({
+            userId: interaction.user.id,
+            tmdbId: Number(tmdbId),
+        });
+
         if (!session)
             return interaction.update('Session expired. Please search again.');
 
@@ -150,7 +167,6 @@ client.on('interactionCreate', async interaction => {
                 break;
             }
         }
-        console.log(selected);
 
         const embed = new EmbedBuilder()
             .setTitle(`${selected.title || selected.name}`)
@@ -163,6 +179,13 @@ client.on('interactionCreate', async interaction => {
             )
             .setColor('#00b4d8')
             .setFooter({ text: `Powered by TMDB` });
+
+        if (rating) {
+            embed.addFields({
+                name: '',
+                value: getRatingString(rating.rating),
+            });
+        }
 
         const row = new ActionRowBuilder();
         ['1', '2', '3', '4', '5'].forEach(rating => {
@@ -192,7 +215,7 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.customId.startsWith('rating')) {
         try {
-            const rating = interaction.customId.split('_')[1];
+            const rating = Number(interaction.customId.split('_')[1]);
 
             const session = await SearchSession.findOne({
                 userId: interaction.user.id,
@@ -205,17 +228,29 @@ client.on('interactionCreate', async interaction => {
             const selected = session.results[0];
 
             const ratingData = {
-                userId: interaction.user.id,
-                tmdbId: selected.id,
                 title: selected.title || selected.name,
-                rating: Number(rating),
                 type: selected.media_type === 'movie' ? 'movie' : 'tv',
             };
 
-            await Rating.create(ratingData);
+            await Rating.updateOne(
+                { userId: interaction.user.id, tmdbId: selected.id },
+                {
+                    $set: {
+                        rating,
+                    },
+                    $setOnInsert: ratingData,
+                },
+                {
+                    upsert: true,
+                }
+            );
+
+            const embed = interaction.message.embeds[0];
+
+            embed.data.fields = [{ name: '', value: getRatingString(rating) }];
+
             await interaction.update({
-                content: 'Rating saved',
-                components: [],
+                embeds: [embed],
             });
         } catch (error) {
             console.log(error);
