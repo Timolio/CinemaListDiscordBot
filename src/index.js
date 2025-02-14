@@ -120,9 +120,7 @@ client.on('interactionCreate', async interaction => {
             }
 
             const fields = ratings.map(rating => ({
-                name: `${rating.title} (${
-                    rating.type === 'movie' ? 'Movie' : 'Series'
-                })`,
+                name: `${rating.title}`,
                 value: getRatingString(rating.rating),
                 inline: true,
             }));
@@ -168,6 +166,15 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
+        const options = [
+            { label: 'None', value: 'delete_rating' },
+            { label: '1 ★', value: '1' },
+            { label: '2 ★★', value: '2' },
+            { label: '3 ★★★', value: '3' },
+            { label: '4 ★★★★', value: '4' },
+            { label: '5 ★★★★★', value: '5' },
+        ];
+
         const embed = new EmbedBuilder()
             .setTitle(`${selected.title || selected.name}`)
             .setDescription(selected.release_date || selected.first_air_date)
@@ -187,15 +194,12 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
-        const row = new ActionRowBuilder();
-        ['1', '2', '3', '4', '5'].forEach(rating => {
-            row.components.push(
-                new ButtonBuilder()
-                    .setCustomId(`rating_${rating}`)
-                    .setLabel(rating)
-                    .setStyle(ButtonStyle.Success)
-            );
-        });
+        const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId('rating_select')
+            .setPlaceholder('Select a rating...')
+            .addOptions(options);
+
+        const row = new ActionRowBuilder().addComponents(selectMenu);
 
         await SearchSession.updateOne(
             { userId: interaction.user.id },
@@ -208,46 +212,55 @@ client.on('interactionCreate', async interaction => {
             components: [row],
         });
     }
-});
 
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isButton()) return;
-
-    if (interaction.customId.startsWith('rating')) {
+    if (interaction.customId === 'rating_select') {
         try {
-            const rating = Number(interaction.customId.split('_')[1]);
-
             const session = await SearchSession.findOne({
                 userId: interaction.user.id,
             });
-            if (!session)
-                return interaction.update(
-                    'Session expired. Please search again.'
-                );
-
             const selected = session.results[0];
 
-            const ratingData = {
-                title: selected.title || selected.name,
-                type: selected.media_type === 'movie' ? 'movie' : 'tv',
-            };
+            let field;
 
-            await Rating.updateOne(
-                { userId: interaction.user.id, tmdbId: selected.id },
-                {
-                    $set: {
-                        rating,
+            if (interaction.values[0] === 'delete_rating') {
+                await Rating.deleteOne({
+                    userId: interaction.user.id,
+                    tmdbId: selected.id,
+                });
+
+                field = [];
+            } else {
+                const rating = Number(interaction.values[0]);
+
+                if (!session)
+                    return interaction.update(
+                        'Session expired. Please search again.'
+                    );
+
+                const ratingData = {
+                    title: selected.title || selected.name,
+                    type: selected.media_type === 'movie' ? 'movie' : 'tv',
+                };
+
+                await Rating.updateOne(
+                    { userId: interaction.user.id, tmdbId: selected.id },
+                    {
+                        $set: {
+                            rating,
+                        },
+                        $setOnInsert: ratingData,
                     },
-                    $setOnInsert: ratingData,
-                },
-                {
-                    upsert: true,
-                }
-            );
+                    {
+                        upsert: true,
+                    }
+                );
+
+                field = [{ name: '', value: getRatingString(rating) }];
+            }
 
             const embed = interaction.message.embeds[0];
 
-            embed.data.fields = [{ name: '', value: getRatingString(rating) }];
+            embed.data.fields = field;
 
             await interaction.update({
                 embeds: [embed],
